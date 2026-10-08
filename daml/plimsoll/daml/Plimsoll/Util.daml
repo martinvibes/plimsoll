@@ -1,0 +1,40 @@
+-- | Small helpers shared across the Plimsoll model.
+module Plimsoll.Util
+  ( require
+  , slotOf
+  , seatShares
+  , isPanel
+  , squareRoot
+  ) where
+
+import DA.List (elemIndex, unique)
+import DA.Optional (fromSomeNote)
+
+-- | Abort the transaction with a readable message unless the condition holds.
+require : CanAssert m => Text -> Bool -> m ()
+require msg ok = assertMsg ("Plimsoll: " <> msg) ok
+
+-- | A node's seat on the panel, 1 to 3, by its position in the panel's list.
+slotOf : [Party] -> Party -> Int
+slotOf nodes node = 1 + fromSomeNote "Plimsoll: not a panel node" (elemIndex node nodes)
+
+-- | The share indices the node in `slot` holds: every index but its own.
+seatShares : Int -> [Int]
+seatShares slot = filter (/= slot) [1, 2, 3]
+
+-- | Three distinct parties.
+isPanel : [Party] -> Bool
+isPanel nodes = length nodes == 3 && unique nodes
+
+-- | The square root of a non-negative Decimal, by Newton's method. Starting
+-- above the root, each step moves down; it stops when a step no longer does.
+squareRoot : Decimal -> Decimal
+squareRoot v
+  | v <= 0.0 = 0.0
+  | otherwise = newton v (if v > 1.0 then v else 1.0) 200
+
+newton : Decimal -> Decimal -> Int -> Decimal
+newton _ x 0 = x
+newton v x steps =
+  let next = (x + v / x) / 2.0
+  in if next >= x then x else newton v next (steps - 1)

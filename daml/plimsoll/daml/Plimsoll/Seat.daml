@@ -1,0 +1,56 @@
+-- | A node's seat on a panel, from which it reports.
+module Plimsoll.Seat
+  ( Seat(..)
+  , Seat_Report(..)
+  ) where
+
+import DA.List (sort, unique)
+
+import Plimsoll.Field
+import Plimsoll.Round
+import Plimsoll.Util
+
+-- | Signed by the node alone. Reporting through it, rather than through the
+-- round every node signs, keeps the parcels it collects out of the other
+-- nodes' view.
+template Seat
+  with
+    node : Party
+    slot : Int
+    nodes : [Party]
+    panel : Text
+  where
+    signatory node
+
+    -- | Collect this node's parcels for a closed round and publish their
+    -- column sums. The sums are computed here, from the parcels themselves,
+    -- so a node cannot report numbers it did not receive.
+    nonconsuming choice Seat_Report : ContractId PartialSum
+      with
+        roundCid : ContractId Round
+        parcels : [ContractId Parcel]
+      controller node
+      do
+        round <- fetch roundCid
+        require "the round belongs to another panel" (round.nodes == nodes && round.terms.name == panel)
+        now <- getTime
+        require "the round is still open" (now >= round.closesAt)
+        collected <- forA parcels \cid -> exercise cid Parcel_Collect with forRound = roundCid
+        require "a parcel is for another seat" (all (\p -> p.node == node && p.slot == slot) collected)
+        let contributors = map (.contributor) collected
+            invited = map (.party) round.members
+        require "each contributor counts once" (unique contributors)
+        require "a contributor was not invited" (all (`elem` invited) contributors)
+        require "too few contributors to reveal a sum" (length contributors >= round.terms.minContributors)
+        let shares = concatMap (.shares) collected
+            column index = Column with
+              index
+              total = sumShares [s.value | s <- shares, s.index == index]
+              squares = sumShares [s.square | s <- shares, s.index == index]
+        create PartialSum with
+          node
+          slot
+          nodes
+          roundCid
+          contributors = sort contributors
+          columns = map column (seatShares slot)

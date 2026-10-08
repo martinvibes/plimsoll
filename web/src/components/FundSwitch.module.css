@@ -1,0 +1,16 @@
+.switch { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.switch header { display: grid; gap: 2px; margin-bottom: 12px; }
+.switch header strong { font-size: 15px; }
+.switch header span { font-size: 12px; color: var(--muted); }
+.switch[data-pending] button:not([data-chosen]) { opacity: .45; pointer-events: none; }
+.list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.list button { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 10px 8px 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--inset); color: var(--ink); text-align: left; transition: border-color 180ms, background 180ms, transform 260ms var(--ease); }
+.list button:hover { border-color: #ffffff2b; background: #ffffff07; transform: translateY(-1px); }
+.list button > svg { margin-left: auto; flex-shrink: 0; color: var(--muted); transition: transform 260ms var(--ease), color 180ms; }
+.list button:hover > svg { color: var(--signal); transform: translateX(2px); }
+.list :global(.persona-avatar) { width: 30px; height: 30px; font-size: 13px; border-radius: 9px; }
+.name { display: grid; min-width: 0; font-size: 13px; font-weight: 600; }
+.name em { justify-self: start; font-size: 9px; font-style: normal; letter-spacing: .1em; text-transform: uppercase; color: #8c8c88; }
+.name em[data-tag=audited] { color: color-mix(in srgb, var(--auditor) 80%, #8c8c88); }
+.name em[data-tag=new] { color: color-mix(in srgb, var(--positive) 60%, #8c8c88); }
+.name em[data-tag=applicant] { color: color-mix(in srgb, var(--reader) 80%, #8c8c88); }

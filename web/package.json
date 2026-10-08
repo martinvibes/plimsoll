@@ -1,0 +1,34 @@
+{
+  "name": "plimsoll-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit --incremental false",
+    "smoke": "tsx --conditions react-server scripts/smoke.ts",
+    "faucet": "tsx --conditions react-server scripts/faucet.ts",
+    "publish-closed": "tsx --conditions react-server scripts/publish-closed.ts"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "1.1.23",
+    "lucide-react": "0.577.0",
+    "next": "16.3.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "server-only": "0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.34.5"
+}

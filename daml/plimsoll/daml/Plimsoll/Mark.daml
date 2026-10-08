@@ -1,0 +1,30 @@
+-- | Published marks and the copies holders receive.
+module Plimsoll.Mark
+  ( ConsensusMark(..)
+  , MarkCopy(..)
+  ) where
+
+import Plimsoll.Types
+
+-- | The panel's record of a published mark, visible to the nodes only.
+-- Holders receive a `MarkCopy`.
+template ConsensusMark
+  with
+    nodes : [Party]
+    mark : Mark
+  where
+    signatory nodes
+
+-- | One holder's copy of a mark: each contributor gets one for free, and a
+-- reader gets one by paying every node. A holder sees its own copy only, so
+-- no fund learns which other funds contributed.
+template MarkCopy
+  with
+    nodes : [Party]
+    mark : Mark
+    holder : Party
+    auditor : Optional Party
+    basis : Basis
+  where
+    signatory nodes
+    observer holder, auditor

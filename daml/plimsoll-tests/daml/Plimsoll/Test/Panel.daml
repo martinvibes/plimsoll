@@ -1,0 +1,89 @@
+-- | Forming a panel and admitting funds both need all three nodes.
+module Plimsoll.Test.Panel where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.List (head, last)
+import DA.Time (addRelTime, days)
+import Daml.Script
+
+import Plimsoll.Membership
+import Plimsoll.Panel
+import Plimsoll.Seat
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+
+
+import Plimsoll.Test.Setup
+
+test_panel_forms_only_when_all_three_nodes_sign : Script ()
+test_panel_forms_only_when_all_three_nodes_sign = do
+  cast <- allocateCast
+  let [first, second, third] = cast.nodes
+      terms = panelTerms (instrument cast)
+  proposal <- submit first $ createCmd PanelProposal with nodes = cast.nodes; accepted = [first]; terms
+  Left proposal' <- submit second $ exerciseCmd proposal PanelProposal_Accept with node = second
+  panels <- query @Panel first
+  panels === []
+  failsWith "already accepted" $ trySubmit second $
+    exerciseCmd proposal' PanelProposal_Accept with node = second
+  -- An outsider cannot even see the proposal, let alone join it.
+  failsWith "NotVisible" $ trySubmit cast.reader $
+    exerciseCmd proposal' PanelProposal_Accept with node = cast.reader
+  Right _ <- submit third $ exerciseCmd proposal' PanelProposal_Accept with node = third
+  forA_ (zip [1 .. length cast.nodes] cast.nodes) \(slot, node) -> do
+    [(_, panel)] <- query @Panel node
+    panel.nodes === cast.nodes
+    [(_, seat)] <- query @Seat node
+    seat.slot === slot
+
+test_panel_needs_at_least_four_contributors : Script ()
+test_panel_needs_at_least_four_contributors = do
+  cast <- allocateCast
+  let first = head cast.nodes
+      terms = (panelTerms (instrument cast)) with minContributors = 3
+  failsWith "Template precondition violated" $ trySubmit first $
+    createCmd PanelProposal with nodes = cast.nodes; accepted = [first]; terms
+
+test_fund_joins_only_when_all_three_nodes_approve : Script ()
+test_fund_joins_only_when_all_three_nodes_approve = do
+  env <- setup
+  let [first, second, third] = env.nodes
+  newcomer <- allocateParty "Glenmore"
+  application <- submit newcomer $ createCmd MembershipApplication with
+    member = newcomer; auditor = None; nodes = env.nodes; panel = "US mid-market senior loans"; approvals = []
+  Left once <- submit first $ exerciseCmd application MembershipApplication_Approve with node = first
+  Left twice <- submit second $ exerciseCmd once MembershipApplication_Approve with node = second
+  memberships <- query @Membership newcomer
+  memberships === []
+  failsWith "already approved" $ trySubmit first $
+    exerciseCmd twice MembershipApplication_Approve with node = first
+  Right _ <- submit third $ exerciseCmd twice MembershipApplication_Approve with node = third
+  [(_, membership)] <- query @Membership newcomer
+  membership.member === newcomer
+
+test_any_one_node_can_turn_a_fund_away : Script ()
+test_any_one_node_can_turn_a_fund_away = do
+  env <- setup
+  newcomer <- allocateParty "Glenmore"
+  application <- submit newcomer $ createCmd MembershipApplication with
+    member = newcomer; auditor = None; nodes = env.nodes; panel = "US mid-market senior loans"; approvals = []
+  Left once <- submit (head env.nodes) $ exerciseCmd application MembershipApplication_Approve with node = head env.nodes
+  submit (last env.nodes) $ exerciseCmd once MembershipApplication_Reject with node = last env.nodes
+  applications <- query @MembershipApplication newcomer
+  applications === []
+
+test_round_needs_enough_funds_to_ever_reveal : Script ()
+test_round_needs_enough_funds_to_ever_reveal = do
+  env <- setup
+  now <- getTime
+  failsWith "too few funds" $ trySubmit (head env.nodes) $ exerciseCmd env.panel Panel_OpenRound with
+    opener = head env.nodes
+    roundId = "thin"
+    loan = halcyon
+    asOf = halcyon.maturity
+    closesAt = addRelTime now (days 1)
+    memberships = take 4 env.memberships
+  pure ()
+
+instrument : Cast -> InstrumentId
+instrument cast = InstrumentId with admin = cast.registry; id = "CC"

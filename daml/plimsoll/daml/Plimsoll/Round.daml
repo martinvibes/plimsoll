@@ -1,0 +1,193 @@
+-- | A marking round: funds submit secret-shared marks for one loan, the nodes
+-- report column sums, and any two reports publish the consensus.
+--
+-- Each fund's mark x is split into three shares that add up to x modulo p
+-- (see `Plimsoll.Field`). The node in seat k receives every share but share
+-- k, so any single node holds two shares of each mark and learns nothing,
+-- while any two nodes between them hold all three columns.
+module Plimsoll.Round
+  ( Share(..)
+  , Column(..)
+  , Round(..)
+  , Round_Publish(..)
+  , Invitation(..)
+  , Invitation_Contribute(..)
+  , Invitation_Decline(..)
+  , Parcel(..)
+  , Parcel_Collect(..)
+  , PartialSum(..)
+  ) where
+
+import DA.Foldable (forA_)
+import DA.List (sort, unique)
+
+import Plimsoll.Field
+import Plimsoll.Mark
+import Plimsoll.Types
+import Plimsoll.Util
+
+-- | One share of a fund's mark and of its square, both modulo p.
+data Share = Share with
+    index : Int
+      -- ^ 1 to 3.
+    value : Int
+    square : Int
+  deriving (Eq, Show)
+
+-- | One node's sum of share `index` over every contributor.
+data Column = Column with
+    index : Int
+    total : Int
+    squares : Int
+  deriving (Eq, Show)
+
+-- | An open round, visible to the nodes only. Members never touch it: each
+-- one contributes through its own invitations.
+template Round
+  with
+    nodes : [Party]
+    terms : PanelTerms
+    roundId : Text
+    loan : Loan
+    asOf : Date
+    closesAt : Time
+    members : [Member]
+      -- ^ The funds invited. Only the nodes see this list.
+  where
+    signatory nodes
+
+    -- | Publish from two or three reports. Every report must cover the same
+    -- contributors, and where two reports carry the same column they must
+    -- agree, so a node or a fund that sends inconsistent numbers stops the
+    -- round instead of skewing it.
+    choice Round_Publish : ContractId ConsensusMark
+      with
+        publisher : Party
+        reports : [ContractId PartialSum]
+      controller publisher
+      do
+        require "only a panel node can publish" (publisher `elem` nodes)
+        sums <- forA reports fetch
+        forA_ reports archive
+        require "a mark needs two or three reports" (length sums == 2 || length sums == 3)
+        require "a report is for another round" (all (\s -> s.roundCid == self) sums)
+        let reporters = map (.node) sums
+        require "one report per node" (unique reporters)
+        contributors <- case sums of
+          first :: _ -> pure (sort first.contributors)
+          [] -> abort "no reports"
+        require "reports cover different contributors"
+          (all (\s -> sort s.contributors == contributors) sums)
+        let columns = concatMap (.columns) sums
+        picked <- forA [1, 2, 3] \index -> do
+          case filter (\c -> c.index == index) columns of
+            [] -> abort ("Plimsoll: no report carries column " <> show index)
+            column :: others -> do
+              require ("reports disagree on column " <> show index) (all (== column) others)
+              pure column
+        let n = length contributors
+            total = sumShares (map (.total) picked)
+            squares = sumShares (map (.squares) picked)
+        -- Marks are secret, so no single one can be range-checked. The sums
+        -- must at least be what marks between 0 and 200 could produce.
+        require "the sums are out of range" (total <= n * maxMark && squares <= n * maxMark * maxMark)
+        require "the sums are inconsistent" (n * squares >= total * total)
+        let count = intToDecimal n
+            mean = intToDecimal total / count / 100.0
+            variance = intToDecimal (n * squares - total * total) / (count * count) / 10000.0
+            mark = Mark with
+              panel = terms.name
+              roundId
+              loan
+              asOf
+              count = n
+              mean = roundCommercial 4 mean
+              spread = roundCommercial 4 (squareRoot variance)
+              reporters
+        forA_ members \member -> if member.party `elem` contributors
+          then do
+            _ <- create MarkCopy with nodes; mark; holder = member.party; auditor = member.auditor; basis = Contributed
+            pure ()
+          else pure ()
+        create ConsensusMark with nodes; mark
+
+-- | A fund's invitation to send one seat its parcel. Each fund gets three,
+-- one per seat, and contributes by exercising all three in one transaction.
+-- Each node signs and sees only its own invitation, so no node ever sees a
+-- parcel meant for another.
+template Invitation
+  with
+    node : Party
+    slot : Int
+    nodes : [Party]
+    member : Member
+    roundCid : ContractId Round
+    roundId : Text
+    loan : Loan
+    asOf : Date
+    closesAt : Time
+  where
+    signatory node
+    observer member.party
+
+    choice Invitation_Contribute : ContractId Parcel
+      with
+        shares : [Share]
+      controller member.party
+      do
+        now <- getTime
+        require "the round has closed" (now < closesAt)
+        require "a parcel carries exactly the two shares this seat holds"
+          (sort (map (.index) shares) == seatShares slot)
+        require "every share is a field element" (all (\s -> isShare s.value && isShare s.square) shares)
+        create Parcel with
+          node
+          slot
+          contributor = member.party
+          auditor = member.auditor
+          roundCid
+          roundId
+          shares
+
+    choice Invitation_Decline : ()
+      controller member.party
+      do pure ()
+
+-- | Two shares of one fund's mark, held by one node. The fund's auditor, if
+-- any, observes all three of the fund's parcels and so can check what the
+-- fund submitted.
+template Parcel
+  with
+    node : Party
+    slot : Int
+    contributor : Party
+    auditor : Optional Party
+    roundCid : ContractId Round
+    roundId : Text
+    shares : [Share]
+  where
+    signatory contributor, node
+    observer auditor
+
+    -- | Consumed by the node's report, so a parcel counts once.
+    choice Parcel_Collect : Parcel
+      with
+        forRound : ContractId Round
+      controller node
+      do
+        require "the parcel belongs to another round" (forRound == roundCid)
+        pure this
+
+-- | One node's column sums for a closed round, visible to the other nodes.
+-- It reveals only sums over at least the panel's minimum of contributors.
+template PartialSum
+  with
+    node : Party
+    slot : Int
+    nodes : [Party]
+    roundCid : ContractId Round
+    contributors : [Party]
+    columns : [Column]
+  where
+    signatory node
+    observer nodes

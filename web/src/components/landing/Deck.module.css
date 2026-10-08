@@ -1,0 +1,23 @@
+.deck { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; scroll-snap-type: y mandatory; overscroll-behavior: contain; scrollbar-width: none; outline: none; }
+.deck::-webkit-scrollbar { display: none; }
+.progress { position: fixed; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--signal), var(--reader)); transform-origin: left; z-index: 50; transition: transform 120ms linear; }
+
+.rail { position: fixed; right: 28px; top: 50%; transform: translateY(-50%); z-index: 45; display: grid; justify-items: end; gap: 6px; }
+.counter { font-family: var(--font-mono); font-size: 11px; color: var(--muted); letter-spacing: .08em; margin-bottom: 10px; }
+.counter b { display: inline-block; color: var(--ink); font-weight: 500; animation: tick 420ms var(--ease); }
+.dot { position: relative; display: flex; align-items: center; justify-content: flex-end; width: 28px; height: 22px; padding: 0; border: 0; background: none; color: var(--muted); }
+.dot::after { content: ''; width: 6px; height: 6px; border-radius: 2px; background: var(--outline); transition: width 360ms var(--ease), background 360ms var(--ease); }
+.dot:hover::after { background: var(--ink); }
+.dot[aria-current]::after { width: 22px; background: var(--signal); }
+.dot span { position: absolute; right: 36px; white-space: nowrap; font-size: 12px; padding: 4px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); opacity: 0; transform: translateX(6px); pointer-events: none; transition: opacity 200ms, transform 200ms var(--ease); }
+.dot:hover span, .dot:focus-visible span { opacity: 1; transform: none; }
+
+.next { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 45; display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 16px; border: 1px solid var(--border); border-radius: 99px; background: #050505cc; backdrop-filter: blur(10px); color: var(--muted); font-size: 12px; letter-spacing: .04em; transition: opacity 300ms, transform 300ms var(--ease), color 200ms; }
+.next:hover { color: var(--ink); border-color: var(--outline); }
+.next svg { animation: nudge 1.6s ease-in-out infinite; }
+.next[data-hidden] { opacity: 0; pointer-events: none; transform: translate(-50%, 12px); }
+
+@keyframes tick { from { opacity: 0; transform: translateY(-8px); } }
+@keyframes nudge { 50% { transform: translateY(3px); } }
+@media (max-width: 760px) { .rail { right: 10px; } .dot span, .counter { display: none; } .dot { width: 14px; } .dot[aria-current]::after { width: 6px; height: 18px; } .next { bottom: 14px; } }
+@media (max-height: 640px), (max-width: 760px) { .deck { scroll-snap-type: y proximity; } }

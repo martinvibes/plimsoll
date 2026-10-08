@@ -1,0 +1,142 @@
+-- | A round publishes the true mean and spread of the funds' marks, from
+-- any two nodes' reports, and refuses anything that would leak or skew.
+module Plimsoll.Test.Round where
+
+import DA.Assert ((===))
+import DA.List (head, last, tail, (!!))
+import DA.Foldable (forA_)
+import Daml.Script
+
+import Plimsoll.Mark
+import Plimsoll.Round
+import Plimsoll.Seat
+import Plimsoll.Types
+
+import Plimsoll.Test.Setup
+
+test_consensus_is_the_mean_and_spread_of_the_marks : Script ()
+test_consensus_is_the_mean_and_spread_of_the_marks = do
+  env <- setup
+  mark <- marked env >>= markOf env
+  mark.count === 5
+  mark.mean === 93.5
+  mark.spread === 1.7393
+  mark.reporters === env.nodes
+  mark.loan === halcyon
+
+test_any_two_reports_publish_the_same_mark : Script ()
+test_any_two_reports_publish_the_same_mark = do
+  env <- setup
+  forA_ [[1, 2], [1, 3], [2, 3]] \slots -> do
+    mark <- markedWith env ("pair-" <> show slots) slots >>= markOf env
+    (mark.count, mark.mean, mark.spread) === (5, 93.5, 1.7393)
+
+test_one_report_cannot_publish : Script ()
+test_one_report_cannot_publish = do
+  env <- setup
+  roundCid <- openRound env "solo"
+  contributeAll roundCid env.funds marks
+  closeRound
+  only <- report env roundCid 1
+  failsWith "two or three reports" $ trySubmit (head env.nodes) $
+    exerciseCmd roundCid Round_Publish with publisher = head env.nodes; reports = [only]
+
+test_nothing_is_revealed_below_the_minimum : Script ()
+test_nothing_is_revealed_below_the_minimum = do
+  env <- setup
+  roundCid <- openRound env "thin"
+  contributeAll roundCid (take 4 env.funds) (take 4 marks)
+  closeRound
+  parcels <- parcelsAt env 1 roundCid
+  failsWith "too few contributors" $ trySubmit (head env.nodes) $
+    exerciseCmd (head env.seats) Seat_Report with roundCid; parcels
+
+test_no_report_before_the_round_closes : Script ()
+test_no_report_before_the_round_closes = do
+  env <- setup
+  roundCid <- openRound env "early"
+  contributeAll roundCid env.funds marks
+  parcels <- parcelsAt env 1 roundCid
+  failsWith "still open" $ trySubmit (head env.nodes) $
+    exerciseCmd (head env.seats) Seat_Report with roundCid; parcels
+
+test_no_contribution_after_the_round_closes : Script ()
+test_no_contribution_after_the_round_closes = do
+  env <- setup
+  roundCid <- openRound env "late"
+  closeRound
+  invitations <- invitationsOf (head env.funds) roundCid
+  let (cid, invitation) = head invitations
+  failsWith "the round has closed" $ trySubmit (head env.funds) $
+    exerciseCmd cid Invitation_Contribute with shares = split "late" 9000 !! (invitation.slot - 1)
+
+test_a_parcel_carries_only_its_seats_shares : Script ()
+test_a_parcel_carries_only_its_seats_shares = do
+  env <- setup
+  roundCid <- openRound env "wrong-seat"
+  (cid, _) :: _ <- invitationsOf (head env.funds) roundCid
+  -- Seat 1 must never receive share 1.
+  failsWith "exactly the two shares" $ trySubmit (head env.funds) $
+    exerciseCmd cid Invitation_Contribute with shares = split "wrong" 9000 !! 1
+
+test_inconsistent_shares_stop_the_round : Script ()
+test_inconsistent_shares_stop_the_round = do
+  env <- setup
+  roundCid <- openRound env "forked"
+  contributeAll roundCid (tail env.funds) (tail marks)
+  -- The first fund sends seat 1 a share 3 that disagrees with seat 2's.
+  let [toSeat1, toSeat2, toSeat3] = split "forked" (head marks)
+      tampered = map (\s -> if s.index == 3 then s with value = s.value + 1 else s) toSeat1
+  _ <- contributeShares roundCid (head env.funds) [tampered, toSeat2, toSeat3]
+  closeRound
+  first <- report env roundCid 1
+  second <- report env roundCid 2
+  failsWith "disagree on column 3" $ trySubmit (head env.nodes) $
+    exerciseCmd roundCid Round_Publish with publisher = head env.nodes; reports = [first, second]
+
+test_reports_must_cover_the_same_funds : Script ()
+test_reports_must_cover_the_same_funds = do
+  env <- setup
+  roundCid <- openRound env "short"
+  contributeAll roundCid env.funds (marks ++ [9400])
+  closeRound
+  -- Seat 1 leaves one fund's parcel out.
+  parcels <- parcelsAt env 1 roundCid
+  short <- submit (head env.nodes) $
+    exerciseCmd (head env.seats) Seat_Report with roundCid; parcels = tail parcels
+  full <- report env roundCid 2
+  failsWith "different contributors" $ trySubmit (head env.nodes) $
+    exerciseCmd roundCid Round_Publish with publisher = head env.nodes; reports = [short, full]
+
+test_a_parcel_counts_once : Script ()
+test_a_parcel_counts_once = do
+  env <- setup
+  roundCid <- openRound env "twice"
+  contributeAll roundCid env.funds marks
+  closeRound
+  parcels <- parcelsAt env 1 roundCid
+  _ <- report env roundCid 1
+  failsWith "" $ trySubmit (head env.nodes) $
+    exerciseCmd (head env.seats) Seat_Report with roundCid; parcels
+
+test_sums_no_set_of_real_marks_could_produce_are_refused : Script ()
+test_sums_no_set_of_real_marks_could_produce_are_refused = do
+  env <- setup
+  roundCid <- openRound env "wild"
+  contributeAll roundCid env.funds (take 4 marks ++ [1_000_000_000])
+  closeRound
+  first <- report env roundCid 1
+  second <- report env roundCid 2
+  failsWith "out of range" $ trySubmit (head env.nodes) $
+    exerciseCmd roundCid Round_Publish with publisher = head env.nodes; reports = [first, second]
+
+test_only_contributors_get_a_free_copy : Script ()
+test_only_contributors_get_a_free_copy = do
+  env <- setup
+  mark <- marked env >>= markOf env
+  forA_ (take 5 env.funds) \fund -> do
+    [(_, copy)] <- query @MarkCopy fund
+    copy.mark === mark
+    copy.basis === Contributed
+  idle <- query @MarkCopy (last env.funds)
+  idle === []

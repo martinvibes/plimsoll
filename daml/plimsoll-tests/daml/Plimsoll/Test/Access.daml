@@ -1,0 +1,74 @@
+-- | A reader pays every node in Canton Coin in the same transaction that
+-- hands it the mark, or gets nothing.
+module Plimsoll.Test.Access where
+
+import DA.Assert ((===))
+import DA.TextMap qualified as TextMap
+import DA.Foldable (forA_)
+import DA.List (head)
+import Daml.Script
+
+import Splice.Api.Token.AllocationRequestV1
+
+import Plimsoll.Access
+import Plimsoll.Mark
+import Plimsoll.Settlement (mkLeg)
+import Plimsoll.Types
+
+import Plimsoll.Test.Setup
+
+test_reader_pays_every_node_and_gets_the_mark_atomically : Script ()
+test_reader_pays_every_node_and_gets_the_mark_atomically = do
+  env <- setup
+  markCid <- marked env
+  published <- markOf env markCid
+  copyCid <- buy env markCid
+  Some copy <- queryContractId env.reader copyCid
+  copy.mark === published
+  copy.basis === Purchased
+  readerCash <- balanceOf env env.reader
+  readerCash === 925.0
+  forA_ env.nodes \node -> do
+    fee <- balanceOf env node
+    fee === 25.0
+
+test_an_underfunded_leg_delivers_nothing : Script ()
+test_an_underfunded_leg_delivers_nothing = do
+  env <- setup
+  markCid <- marked env
+  (requestCid, request) <- requestRead env markCid
+  allocations <- forA (feeLegs request) \(legId, leg) ->
+    allocate env request.settlement legId (if legId == feeLegId 3 then leg with amount = 24.0 else leg)
+  failsWith "exactly the expected leg" $ trySubmit request.settlement.executor $
+    exerciseCmd requestCid ReadRequest_Fulfil with allocations
+  copies <- query @MarkCopy env.reader
+  copies === []
+
+test_every_node_must_be_paid : Script ()
+test_every_node_must_be_paid = do
+  env <- setup
+  markCid <- marked env
+  (requestCid, request) <- requestRead env markCid
+  allocations <- forA (take 2 (feeLegs request)) \(legId, leg) -> allocate env request.settlement legId leg
+  failsWith "one allocation per node" $ trySubmit request.settlement.executor $
+    exerciseCmd requestCid ReadRequest_Fulfil with allocations
+  -- Paying one node twice does not stand in for the third.
+  let [(_, toFirst), _, _] = feeLegs request
+  twice <- allocate env request.settlement (feeLegId 3) (mkLeg env.reader (head env.nodes) toFirst.amount env.cc)
+  failsWith "exactly the expected leg" $ trySubmit request.settlement.executor $
+    exerciseCmd requestCid ReadRequest_Fulfil with allocations = allocations ++ [twice]
+
+test_the_request_is_a_standard_allocation_request : Script ()
+test_the_request_is_a_standard_allocation_request = do
+  env <- setup
+  markCid <- marked env
+  (requestCid, _) <- requestRead env markCid
+  Some view <- queryInterfaceContractId @AllocationRequest env.reader (toInterfaceContractId requestCid)
+  view.settlement.executor === head env.nodes
+  TextMap.size view.transferLegs === 3
+  -- The reader can walk away.
+  _ <- submit env.reader $ exerciseCmd (toInterfaceContractId @AllocationRequest requestCid) AllocationRequest_Reject with
+    actor = env.reader
+    extraArgs = noExtraArgs
+  requests <- query @ReadRequest env.reader
+  requests === []

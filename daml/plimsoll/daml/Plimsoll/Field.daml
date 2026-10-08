@@ -1,0 +1,30 @@
+-- | The arithmetic the pieces live in: integers modulo the Mersenne prime
+-- 2^61 - 1.
+--
+-- A fund's mark x is split into three shares s1, s2, s3 with
+-- s1 + s2 + s3 = x (mod p). Any one or two of them are uniformly random, so a
+-- node holding two shares learns nothing about x. Adding the same share index
+-- across every fund gives one column; the three columns add up to the total.
+module Plimsoll.Field
+  ( prime
+  , reduce
+  , isShare
+  , sumShares
+  ) where
+
+-- | 2^61 - 1. Two values below it add to less than 2^62, so a running sum
+-- never overflows a 64-bit Int.
+prime : Int
+prime = 2305843009213693951
+
+-- | The representative of x in [0, p).
+reduce : Int -> Int
+reduce x = let r = x % prime in if r < 0 then r + prime else r
+
+-- | True for a well-formed share: an element of [0, p).
+isShare : Int -> Bool
+isShare x = x >= 0 && x < prime
+
+-- | The sum of shares, modulo p.
+sumShares : [Int] -> Int
+sumShares = foldl (\acc x -> reduce (acc + x)) 0

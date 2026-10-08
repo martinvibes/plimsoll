@@ -1,0 +1,29 @@
+# Dependencies and builds
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# Daml build output
+.daml/
+
+# Local ledger state: the seeded cast and ledger tokens
+.plimsoll/
+*.token.json
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+
+# Canton sandbox logs
+log/
+
+# Agent rule files that `next dev` writes
+web/AGENTS.md
+web/CLAUDE.md

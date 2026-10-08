@@ -1,0 +1,155 @@
+-- | Seeds a running ledger with the demo panel the web app drives.
+--
+-- `open` allocates fresh parties, forms the panel, admits six funds,
+-- subscribes a reader, and opens ten rounds: three quarters of three loans
+-- that close in thirty seconds with five marks each, and one live round still
+-- waiting on the first fund. A seventh fund has applied and waits on the
+-- nodes. After the nine close, `publishClosed` reports and publishes them.
+--
+-- `devnet` seeds the same demo on parties that already exist, paying in
+-- Canton Coin.
+module Plimsoll.Demo
+  ( open
+  , devnet
+  , publishClosed
+  ) where
+
+import DA.Date (Month(..), date)
+import DA.Foldable (forA_)
+import DA.List (head, init, last, sortOn)
+import DA.Optional (mapOptional)
+import DA.Text qualified as Text
+import DA.Time (RelTime, convertRelTimeToMicroseconds, days, seconds, subTime, time, addRelTime)
+import Daml.Script
+
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+
+import Plimsoll.Access
+import Plimsoll.Membership
+import Plimsoll.Panel
+import Plimsoll.Round
+import Plimsoll.Seat
+import Plimsoll.Types
+
+import Plimsoll.Test.Setup
+
+-- | A loan, the date it is marked as of, and the funds' marks.
+type Book = (Loan, Date, [Int])
+
+brightwater : Loan
+brightwater = Loan with id = "BRIGHTWATER-TLB-2030"; borrower = "Brightwater Foods"; facility = "Term Loan B"; maturity = date 2030 Mar 31
+
+corvid : Loan
+corvid = Loan with id = "CORVID-UNI-2032"; borrower = "Corvid Software"; facility = "Unitranche"; maturity = date 2032 Sep 30
+
+-- | Three quarter-ends of marks for three loans, oldest first.
+history : [Book]
+history =
+  [ (halcyon, date 2026 Mar 31, [9550, 9500, 9600, 9450, 9575])
+  , (brightwater, date 2026 Mar 31, [8600, 8450, 8750, 8400, 8650])
+  , (corvid, date 2026 Mar 31, [9700, 9800, 9650, 9850, 9750])
+  , (halcyon, date 2026 Jun 30, [9450, 9400, 9500, 9350, 9425])
+  , (brightwater, date 2026 Jun 30, [8750, 8600, 8900, 8500, 8800])
+  , (corvid, date 2026 Jun 30, [9800, 9875, 9725, 9900, 9850])
+  , (halcyon, valuationDate, marks)
+  , (brightwater, valuationDate, [8850, 8700, 9025, 8600, 8925])
+  , (corvid, valuationDate, [9775, 9850, 9700, 9900, 9825]) ]
+
+-- | Marked by four funds so far; the first fund contributes from the app.
+live : Book
+live =
+  ( Loan with id = "TIDEWELL-TLB-2030"; borrower = "Tidewell Logistics"; facility = "Term Loan B"; maturity = date 2030 Dec 31
+  , valuationDate
+  , [9400, 9550, 9300, 9475] )
+
+valuationDate : Date
+valuationDate = date 2026 Sep 30
+
+open : Script Cast
+open = do
+  tag <- runTag
+  cast <- allocateCastWith \name -> allocatePartyByHint (PartyIdHint (name <> "-" <> tag))
+  env <- prepare cast
+  applicant <- allocatePartyByHint (PartyIdHint ("Greystone-" <> tag))
+  seedRounds (seconds 30) env applicant
+  pure cast with funds = cast.funds ++ [applicant]
+
+-- | The demo on parties created in DevNet's Console, paying in Canton Coin:
+-- `registry` is the DSO, Canton Coin's admin, and the last fund is the
+-- applicant. Past rounds close after a minute, as DevNet is slower than a
+-- sandbox.
+devnet : Cast -> Script Cast
+devnet cast = do
+  let cc = InstrumentId with admin = cast.registry; id = "Amulet"
+  env <- prepareIn cc (cast with funds = init cast.funds)
+  seedRounds (seconds 60) env (last cast.funds)
+  pure cast
+
+-- | The past rounds, closing `closeAfter` from when each opens, the live
+-- round and the applicant's application.
+seedRounds : RelTime -> Env -> Party -> Script ()
+seedRounds closeAfter env applicant = do
+  now <- getTime
+  forA_ history \(loan, asOf, values) -> do
+    opened <- getTime
+    roundCid <- openFor env loan asOf (addRelTime opened closeAfter)
+    contributeAll roundCid env.funds values
+  let (loan, asOf, values) = live
+  roundCid <- openFor env loan asOf (addRelTime now (days 3))
+  contributeAll roundCid (drop 1 env.funds) values
+  _ <- submit applicant $ createCmd MembershipApplication with
+    member = applicant
+    auditor = None
+    nodes = env.nodes
+    panel = (panelTerms env.cc).name
+    approvals = []
+  pure ()
+
+-- | Report and publish every closed round, and list each mark to the reader.
+publishClosed : Cast -> Script ()
+publishClosed cast = do
+  env <- envOf cast
+  now <- getTime
+  rounds <- filter (\(_, r) -> r.closesAt <= now) <$> query @Round (head cast.nodes)
+  forA_ (sortOn (\(_, r) -> r.roundId) rounds) \(roundCid, _) -> do
+    reports <- forA [1, 2, 3] (report env roundCid)
+    markCid <- publish env roundCid reports
+    submit (head cast.nodes) $ exerciseCmd env.panel Panel_List with
+      node = head cast.nodes
+      markCid
+      subscriptions = [env.subscription]
+
+openFor : Env -> Loan -> Date -> Time -> Script (ContractId Round)
+openFor env loan asOf closesAt =
+  submit (head env.nodes) $ exerciseCmd env.panel Panel_OpenRound with
+    opener = head env.nodes
+    roundId = loan.id <> "/" <> show asOf
+    loan
+    asOf
+    closesAt
+    memberships = env.memberships
+
+-- | The fixture's contracts for a cast already prepared on this ledger.
+envOf : Cast -> Script Env
+envOf Cast{..} = do
+  let lead = head nodes
+      rules = None
+  [(panel, formed)] <- query @Panel lead
+  let cc = formed.terms.instrumentId
+  seats <- forA nodes \node -> fst . head <$> query @Seat node
+  held <- query @Membership lead
+  let memberships = mapOptional (\fund -> lookup fund [(m.member, cid) | (cid, m) <- held]) funds
+  [(subscription, _)] <- query @Subscription reader
+  pure Env with ..
+
+-- | Seconds since the epoch, in base 36, to tag party ids.
+runTag : Script Text
+runTag = do
+  now <- getTime
+  pure (base36 (convertRelTimeToMicroseconds (subTime now (time (date 1970 Jan 1) 0 0 0)) / 1_000_000))
+
+base36 : Int -> Text
+base36 n
+  | n < 36 = digit
+  | otherwise = base36 (n / 36) <> digit
+  where digit = Text.substring (n % 36) 1 "0123456789abcdefghijklmnopqrstuvwxyz"

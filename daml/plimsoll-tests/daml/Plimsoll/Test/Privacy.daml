@@ -1,0 +1,88 @@
+-- | Who sees what. No node ever holds all three shares of a fund's mark, no
+-- fund sees another fund, and the published mark names no fund.
+module Plimsoll.Test.Privacy where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.List (head, sort)
+import DA.Text qualified as Text
+import Daml.Script
+
+import Plimsoll.Access
+import Plimsoll.Mark
+import Plimsoll.Membership
+import Plimsoll.Round
+import Plimsoll.Util (seatShares)
+
+import Plimsoll.Test.Setup
+
+test_no_node_holds_all_three_shares_of_any_mark : Script ()
+test_no_node_holds_all_three_shares_of_any_mark = do
+  env <- setup
+  roundCid <- openRound env "privacy"
+  contributeAll roundCid env.funds marks
+  forA_ (zip [1 .. length env.nodes] env.nodes) \(slot, node) -> do
+    parcels <- map snd <$> query @Parcel node
+    -- One parcel per fund, each with exactly this seat's two shares.
+    sort (map (.contributor) parcels) === sort (take 5 env.funds)
+    forA_ parcels \parcel -> do
+      parcel.node === node
+      sort (map (.index) parcel.shares) === seatShares slot
+  -- And no node can look up another seat's parcel.
+  [toSeat1, toSeat2, _] <- map fst <$> (forA (take 3 env.nodes) \node ->
+    head . filter (\(_, p) -> p.contributor == head env.funds) <$> query @Parcel node)
+  missing <- queryContractId (nodeAt env 2) toSeat1
+  missing === None
+  missing' <- queryContractId (nodeAt env 1) toSeat2
+  missing' === None
+
+test_a_fund_sees_only_its_own_contracts : Script ()
+test_a_fund_sees_only_its_own_contracts = do
+  env <- setup
+  _ <- marked env
+  forA_ env.funds \fund -> do
+    rounds <- query @Round fund
+    rounds === []
+    sums <- query @PartialSum fund
+    sums === []
+    consensus <- query @ConsensusMark fund
+    consensus === []
+    memberships <- map (.member) . map snd <$> query @Membership fund
+    memberships === [fund]
+    copies <- map (.holder) . map snd <$> query @MarkCopy fund
+    forA_ copies (=== fund)
+    invitations <- map (\(_, i) -> i.member.party) <$> query @Invitation fund
+    forA_ invitations (=== fund)
+
+test_the_mark_names_no_fund : Script ()
+test_the_mark_names_no_fund = do
+  env <- setup
+  mark <- marked env >>= markOf env
+  forA_ env.funds \fund ->
+    assertMsg "a fund appears in the mark" (not (partyToText fund `Text.isInfixOf` show mark))
+
+test_the_funds_auditor_can_recover_what_it_submitted : Script ()
+test_the_funds_auditor_can_recover_what_it_submitted = do
+  env <- setup
+  roundCid <- openRound env "audit"
+  contributeAll roundCid env.funds marks
+  parcels <- map snd <$> query @Parcel env.auditor
+  map (.contributor) parcels === replicate 3 (head env.funds)
+  recombine (map (.shares) parcels) === head marks
+  -- The auditor sees nothing of any other fund.
+  others <- query @Invitation env.auditor
+  others === []
+
+test_a_reader_sees_listings_not_marks_until_it_pays : Script ()
+test_a_reader_sees_listings_not_marks_until_it_pays = do
+  env <- setup
+  markCid <- marked env
+  _ <- requestRead env markCid
+  consensus <- query @ConsensusMark env.reader
+  consensus === []
+  copies <- query @MarkCopy env.reader
+  copies === []
+  rounds <- query @Round env.reader
+  rounds === []
+  requests <- query @ReadRequest env.reader
+  length requests === 1

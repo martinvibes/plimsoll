@@ -1,0 +1,33 @@
+.screen {
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ justify-content: center;
+ gap: 12px;
+ min-height: clamp(340px, 55svh, 620px);
+ padding: 48px 24px;
+ text-align: center;
+}
+.visual {
+ display: grid;
+ place-items: center;
+ flex-shrink: 0;
+ width: 168px;
+ height: 168px;
+ border-radius: 50%;
+}
+.label {
+ margin: 0;
+ color: var(--ink);
+ font-family: var(--font-ui);
+ font-size: 16px;
+ font-weight: 500;
+ line-height: 1.5;
+ letter-spacing: -.015em;
+}
+@media (max-width: 600px) {
+ .screen { min-height: 340px; padding: 40px 20px; }
+ .visual { width: 144px; height: 144px; }
+}
+.visual svg { animation: float 1.8s var(--ease) infinite alternate; }
+@keyframes float { to { transform: translateY(-6px); } }

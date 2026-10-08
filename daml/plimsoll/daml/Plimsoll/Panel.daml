@@ -1,0 +1,131 @@
+-- | A panel: three independent nodes that hold the shares, report the sums
+-- and sell the results.
+module Plimsoll.Panel
+  ( PanelProposal(..)
+  , PanelProposal_Accept(..)
+  , PanelProposal_Decline(..)
+  , Panel(..)
+  , Panel_OpenRound(..)
+  , Panel_AdmitReader(..)
+  , Panel_List(..)
+  ) where
+
+import DA.Foldable (forA_)
+import DA.List (unique)
+
+import Plimsoll.Access
+import Plimsoll.Mark
+import Plimsoll.Membership
+import Plimsoll.Round
+import Plimsoll.Seat
+import Plimsoll.Types
+import Plimsoll.Util
+
+-- | A panel in formation. It becomes a panel only when all three nodes have
+-- signed.
+template PanelProposal
+  with
+    nodes : [Party]
+    accepted : [Party]
+    terms : PanelTerms
+  where
+    signatory accepted
+    observer nodes
+    ensure isPanel nodes
+      && validTerms terms
+      && not (null accepted)
+      && all (`elem` nodes) accepted
+      && unique accepted
+
+    choice PanelProposal_Accept : Either (ContractId PanelProposal) (ContractId Panel)
+      with
+        node : Party
+      controller node
+      do
+        require "only a proposed node can accept" (node `elem` nodes)
+        require "this node has already accepted" (node `notElem` accepted)
+        let accepted' = node :: accepted
+        if length accepted' == length nodes
+          then do
+            forA_ (zip [1 .. length nodes] nodes) \(slot, seated) ->
+              create Seat with node = seated; slot; nodes; panel = terms.name
+            Right <$> create Panel with nodes; terms
+          else Left <$> create this with accepted = accepted'
+
+    choice PanelProposal_Decline : ()
+      with
+        node : Party
+      controller node
+      do require "only a proposed node can decline" (node `elem` nodes)
+
+-- | A formed panel. Any node may act for the panel on routine steps; each
+-- step that could leak a mark is guarded elsewhere (admission needs all
+-- three nodes, sums need the minimum number of contributors).
+template Panel
+  with
+    nodes : [Party]
+    terms : PanelTerms
+  where
+    signatory nodes
+    ensure isPanel nodes && validTerms terms
+
+    -- | Open a round for one loan and invite admitted funds. Each fund gets
+    -- one invitation per seat.
+    nonconsuming choice Panel_OpenRound : ContractId Round
+      with
+        opener : Party
+        roundId : Text
+        loan : Loan
+        asOf : Date
+        closesAt : Time
+        memberships : [ContractId Membership]
+      controller opener
+      do
+        require "only a panel node can open a round" (opener `elem` nodes)
+        now <- getTime
+        require "the round must close in the future" (closesAt > now)
+        members <- forA memberships \cid -> do
+          membership <- fetch cid
+          require "a membership is for another panel" (membership.nodes == nodes && membership.panel == terms.name)
+          pure Member with party = membership.member; auditor = membership.auditor
+        require "each fund is invited once" (unique (map (.party) members))
+        require "too few funds to ever reveal a mark" (length members >= terms.minContributors)
+        roundCid <- create Round with nodes; terms; roundId; loan; asOf; closesAt; members
+        forA_ members \member -> forA_ (zip [1 .. length nodes] nodes) \(slot, node) ->
+          create Invitation with node; slot; nodes; member; roundCid; roundId; loan; asOf; closesAt
+        pure roundCid
+
+    nonconsuming choice Panel_AdmitReader : ContractId Subscription
+      with
+        node : Party
+        reader : Party
+      controller node
+      do
+        require "only a panel node can admit a reader" (node `elem` nodes)
+        require "a node does not subscribe to its own panel" (reader `notElem` nodes)
+        create Subscription with nodes; panel = terms.name; reader
+
+    -- | Offer a published mark to subscribed readers, one listing each.
+    nonconsuming choice Panel_List : [ContractId Listing]
+      with
+        node : Party
+        markCid : ContractId ConsensusMark
+        subscriptions : [ContractId Subscription]
+      controller node
+      do
+        require "only a panel node can list a mark" (node `elem` nodes)
+        consensus <- fetch markCid
+        require "the mark is from another panel" (consensus.nodes == nodes && consensus.mark.panel == terms.name)
+        forA subscriptions \cid -> do
+          subscription <- fetch cid
+          require "a subscription is for another panel" (subscription.nodes == nodes && subscription.panel == terms.name)
+          create Listing with
+            nodes
+            reader = subscription.reader
+            markCid
+            roundId = consensus.mark.roundId
+            loan = consensus.mark.loan
+            asOf = consensus.mark.asOf
+            count = consensus.mark.count
+            feePerNode = terms.feePerNode
+            instrumentId = terms.instrumentId

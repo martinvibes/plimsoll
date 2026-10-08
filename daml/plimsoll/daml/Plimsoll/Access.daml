@@ -1,0 +1,119 @@
+-- | Paid access for readers: lenders, LPs and anyone else who needs an
+-- independent price. A reader pays every node in the same transaction that
+-- hands it the mark.
+module Plimsoll.Access
+  ( Subscription(..)
+  , Listing(..)
+  , Listing_Buy(..)
+  , ReadRequest(..)
+  , ReadRequest_Fulfil(..)
+  , feeLegId
+  , feeLegs
+  ) where
+
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+import DA.Time (days, hours, addRelTime)
+
+import Splice.Api.Token.MetadataV1 (ChoiceExecutionMetadata(..), emptyMetadata)
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+import Splice.Api.Token.AllocationV1 (SettlementInfo(..), TransferLeg)
+import Splice.Api.Token.AllocationRequestV1
+
+import Plimsoll.Mark
+import Plimsoll.Settlement
+import Plimsoll.Types
+import Plimsoll.Util
+
+-- | A reader admitted to the panel's listings.
+template Subscription
+  with
+    nodes : [Party]
+    panel : Text
+    reader : Party
+  where
+    signatory nodes
+    observer reader
+
+-- | A mark offered to one reader: the loan, the date and how many funds
+-- contributed, but not the mark itself. Each reader sees its own listings
+-- only.
+template Listing
+  with
+    nodes : [Party]
+    reader : Party
+    markCid : ContractId ConsensusMark
+    roundId : Text
+    loan : Loan
+    asOf : Date
+    count : Int
+    feePerNode : Decimal
+    instrumentId : InstrumentId
+  where
+    signatory nodes
+    observer reader
+
+    -- | Ask to buy. The reader then allocates one fee leg to each node from
+    -- its CIP-56 wallet; the panel's first node executes.
+    choice Listing_Buy : ContractId ReadRequest
+      controller reader
+      do
+        now <- getTime
+        executor <- case nodes of
+          first :: _ -> pure first
+          [] -> abort "a panel has nodes"
+        let settlement = settlementInfo executor
+              ("plimsoll/" <> roundId <> "/" <> partyToText reader)
+              now (addRelTime now (hours 1)) (addRelTime now (days 1))
+        create ReadRequest with nodes; reader; markCid; feePerNode; instrumentId; settlement
+
+-- | A reader's purchase awaiting its fee legs.
+template ReadRequest
+  with
+    nodes : [Party]
+    reader : Party
+    markCid : ContractId ConsensusMark
+    feePerNode : Decimal
+    instrumentId : InstrumentId
+    settlement : SettlementInfo
+  where
+    signatory nodes, reader
+
+    -- | Pay every node and deliver the mark, all in one transaction: the
+    -- reader gets its copy only if every fee leg settles.
+    choice ReadRequest_Fulfil : ContractId MarkCopy
+      with
+        allocations : [AllocationInput]
+          -- ^ One per node, in seat order.
+      controller settlement.executor
+      do
+        let legs = feeLegs this
+        require "one allocation per node" (length allocations == length legs)
+        forA_ (zip legs allocations) \((legId, leg), allocation) ->
+          settleLeg settlement legId leg allocation
+        consensus <- fetch markCid
+        create MarkCopy with
+          nodes
+          mark = consensus.mark
+          holder = reader
+          auditor = None
+          basis = Purchased
+
+    interface instance AllocationRequest for ReadRequest where
+      view = requestView settlement (TextMap.fromList (feeLegs this))
+
+      allocationRequest_RejectImpl _self AllocationRequest_Reject{actor} = do
+        require "only the reader can reject" (actor == reader)
+        pure ChoiceExecutionMetadata with meta = emptyMetadata
+
+      allocationRequest_WithdrawImpl _self _arg =
+        pure ChoiceExecutionMetadata with meta = emptyMetadata
+
+feeLegId : Int -> Text
+feeLegId slot = "fee-" <> show slot
+
+-- | The reader pays each node `feePerNode`, keyed by seat.
+feeLegs : ReadRequest -> [(Text, TransferLeg)]
+feeLegs request =
+  [ (feeLegId slot, mkLeg request.reader node request.feePerNode request.instrumentId)
+  | (slot, node) <- zip [1 .. length request.nodes] request.nodes ]

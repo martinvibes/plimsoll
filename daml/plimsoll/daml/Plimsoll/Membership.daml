@@ -1,0 +1,63 @@
+-- | Admission of funds. A fund joins only when all three nodes approve it,
+-- so no single node can pad a round with funds it controls and subtract
+-- their marks from the sum.
+module Plimsoll.Membership
+  ( MembershipApplication(..)
+  , MembershipApplication_Approve(..)
+  , MembershipApplication_Reject(..)
+  , MembershipApplication_Withdraw(..)
+  , Membership(..)
+  ) where
+
+import DA.List (unique)
+
+import Plimsoll.Util
+
+template MembershipApplication
+  with
+    member : Party
+    auditor : Optional Party
+    nodes : [Party]
+    panel : Text
+    approvals : [Party]
+  where
+    signatory member, approvals
+    observer nodes
+    ensure isPanel nodes
+      && member `notElem` nodes
+      && all (`elem` nodes) approvals
+      && unique approvals
+
+    choice MembershipApplication_Approve : Either (ContractId MembershipApplication) (ContractId Membership)
+      with
+        node : Party
+      controller node
+      do
+        require "only a panel node can approve" (node `elem` nodes)
+        require "this node has already approved" (node `notElem` approvals)
+        let approvals' = node :: approvals
+        if length approvals' == length nodes
+          then Right <$> create Membership with nodes; panel; member; auditor
+          else Left <$> create this with approvals = approvals'
+
+    -- | Any one node can turn a fund away.
+    choice MembershipApplication_Reject : ()
+      with
+        node : Party
+      controller node
+      do require "only a panel node can reject" (node `elem` nodes)
+
+    choice MembershipApplication_Withdraw : ()
+      controller member
+      do pure ()
+
+-- | An admitted fund. Each fund sees its own membership only.
+template Membership
+  with
+    nodes : [Party]
+    panel : Text
+    member : Party
+    auditor : Optional Party
+  where
+    signatory nodes
+    observer member

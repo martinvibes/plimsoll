@@ -1,0 +1,73 @@
+-- | Plain data shared by the Plimsoll templates.
+module Plimsoll.Types
+  ( PanelTerms(..)
+  , Loan(..)
+  , Member(..)
+  , Mark(..)
+  , Basis(..)
+  , maxMark
+  , validTerms
+  ) where
+
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+
+-- | What the three nodes agree on when they form a panel.
+data PanelTerms = PanelTerms with
+    name : Text
+      -- ^ For example "US mid-market senior loans".
+    minContributors : Int
+      -- ^ A round reveals nothing below this many contributors.
+    feePerNode : Decimal
+      -- ^ What a reader pays each node for one mark.
+    instrumentId : InstrumentId
+      -- ^ The token readers pay in: Canton Coin on DevNet.
+  deriving (Eq, Show)
+
+-- | The loan being marked. The borrower is named, not a party: it never
+-- touches the ledger.
+data Loan = Loan with
+    id : Text
+    borrower : Text
+    facility : Text
+    maturity : Date
+  deriving (Eq, Show)
+
+-- | An admitted fund and, if it has one, the auditor who may see what it
+-- submits.
+data Member = Member with
+    party : Party
+    auditor : Optional Party
+  deriving (Eq, Show)
+
+-- | A published consensus mark. It names the nodes that reported, never
+-- the funds that contributed.
+data Mark = Mark with
+    panel : Text
+    roundId : Text
+    loan : Loan
+    asOf : Date
+    count : Int
+      -- ^ How many funds contributed.
+    mean : Decimal
+      -- ^ In points of par, to four places.
+    spread : Decimal
+      -- ^ Standard deviation of the contributed marks, in points of par.
+    reporters : [Party]
+  deriving (Eq, Show)
+
+-- | How a holder came to hold a copy of a mark.
+data Basis
+  = Contributed
+    -- ^ Gave a mark to the round; copies are free.
+  | Purchased
+    -- ^ Paid every node for it.
+  deriving (Eq, Show)
+
+-- | The highest mark a fund may submit: 200.00 points of par, in hundredths.
+maxMark : Int
+maxMark = 20000
+
+-- | With a mean and a spread published, three contributors would let each
+-- one solve for the other two marks. Four is the floor.
+validTerms : PanelTerms -> Bool
+validTerms terms = terms.minContributors >= 4 && terms.feePerNode > 0.0

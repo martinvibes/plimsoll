@@ -1,0 +1,6 @@
+sdk-version: 3.5.12
+
+packages:
+  - ./plimsoll
+  - ./plimsoll-tests
+  - ./plimsoll-demo

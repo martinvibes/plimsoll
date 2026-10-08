@@ -1,0 +1,9 @@
+.gauge { margin: 18px 0 4px; }
+.track { position: relative; height: 34px; border-radius: 8px; background: repeating-linear-gradient(90deg, #ffffff10 0 1px, transparent 1px 10%); border: 1px solid var(--border); overflow: visible; }
+.band { position: absolute; top: 6px; bottom: 6px; border-radius: 4px; background: linear-gradient(90deg, #ff6b3d22, #ff6b3d44, #ff6b3d22); animation: grow 700ms var(--ease) both; transform-origin: center; }
+.mean { position: absolute; top: -4px; bottom: -4px; width: 3px; margin-left: -1.5px; border-radius: 2px; background: var(--signal); box-shadow: 0 0 12px var(--signal); animation: drop 600ms var(--ease) both 150ms; }
+.compare { position: absolute; top: 50%; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; border-radius: 50%; background: var(--fund); border: 2px solid var(--paper); animation: drop 600ms var(--ease) both 300ms; }
+.compare::after { content: attr(data-label); position: absolute; top: 18px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--fund); white-space: nowrap; }
+.scale { display: flex; justify-content: space-between; margin-top: 6px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+@keyframes grow { from { transform: scaleX(0); opacity: 0; } }
+@keyframes drop { from { transform: translateY(-8px); opacity: 0; } }

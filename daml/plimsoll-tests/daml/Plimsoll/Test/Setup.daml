@@ -1,0 +1,318 @@
+-- | Shared test fixture: a test-token registry standing in for Canton Coin,
+-- a formed panel of three nodes, six admitted funds and one subscribed
+-- reader.
+module Plimsoll.Test.Setup where
+
+import DA.Date (Month(..), date)
+import DA.Foldable (forA_)
+import DA.Action (unless)
+import DA.List (elemIndex, head, sortOn, tail, (!!))
+import DA.Optional (fromSomeNote)
+import DA.Text qualified as Text
+import DA.Time (days, time, addRelTime)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1 (ExtraArgs(..), emptyChoiceContext, emptyMetadata)
+import Splice.Api.Token.HoldingV1 (HoldingView(..), InstrumentId(..))
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.AllocationInstructionV1
+import Splice.Testing.Tokens.TestTokenV1 (Token(..), TokenRules(..))
+
+import Plimsoll.Access
+import Plimsoll.Field
+import Plimsoll.Mark
+import Plimsoll.Membership
+import Plimsoll.Panel
+import Plimsoll.Round
+import Plimsoll.Seat
+import Plimsoll.Settlement
+import Plimsoll.Types
+
+-- | The parties, before any contract exists.
+data Cast = Cast with
+    registry : Party
+      -- ^ Admin of the test token that stands in for Canton Coin.
+    nodes : [Party]
+    funds : [Party]
+    auditor : Party
+      -- ^ Audits the first fund.
+    reader : Party
+      -- ^ A NAV lender that buys marks.
+  deriving (Eq, Show)
+
+data Env = Env with
+    registry : Party
+    nodes : [Party]
+    funds : [Party]
+    auditor : Party
+    reader : Party
+    cc : InstrumentId
+    rules : Optional (ContractId TokenRules)
+      -- ^ The test token's factory; none where the token is Canton Coin.
+    panel : ContractId Panel
+    seats : [ContractId Seat]
+      -- ^ In seat order.
+    memberships : [ContractId Membership]
+    subscription : ContractId Subscription
+
+allocateCast : Script Cast
+allocateCast = allocateCastWith allocateParty
+
+allocateCastWith : (Text -> Script Party) -> Script Cast
+allocateCastWith allocate = do
+  registry <- allocate "Registry"
+  nodes <- mapA allocate nodeNames
+  funds <- mapA allocate fundNames
+  auditor <- allocate "Ledgerwise"
+  reader <- allocate "Northbank"
+  pure Cast with ..
+
+nodeNames, fundNames : [Text]
+nodeNames = ["Sextant", "Fathom", "Lodestar"]
+fundNames = ["Ashgrove", "Bramble", "Coldwater", "Dunmore", "Eastfield", "Fernhill"]
+
+panelTerms : InstrumentId -> PanelTerms
+panelTerms cc = PanelTerms with
+  name = "US mid-market senior loans"
+  minContributors = 5
+  feePerNode = 25.0
+  instrumentId = cc
+
+-- | Forms the panel, admits every fund (the first with its auditor) and
+-- subscribes the reader, who starts with 1,000 in test coin.
+prepare : Cast -> Script Env
+prepare cast = do
+  let cc = InstrumentId with admin = cast.registry; id = "CC"
+  rules <- submit cast.registry $ createCmd TokenRules with admin = cast.registry
+  env <- prepareIn cc cast
+  let funded = env with rules = Some rules
+  mint funded cast.reader 1_000.0
+  pure funded
+
+-- | The panel, its members and its reader, paying in `cc`: a token whose
+-- registry already runs, such as Canton Coin on DevNet.
+prepareIn : InstrumentId -> Cast -> Script Env
+prepareIn cc Cast{..} = do
+  panel <- formPanel nodes (panelTerms cc)
+  seats <- forA nodes \node -> do
+    [(seat, _)] <- query @Seat node
+    pure seat
+  memberships <- forA (zip [0 .. length funds] funds) \(i, fund) ->
+    admit nodes (panelTerms cc).name fund (if i == 0 then Some auditor else None)
+  subscription <- submit (head nodes) $ exerciseCmd panel Panel_AdmitReader with
+    node = head nodes
+    reader
+  let rules = None
+  pure Env with ..
+
+setup : Script Env
+setup = do
+  setTime (time (date 2026 Sep 30) 9 0 0)
+  allocateCast >>= prepare
+
+formPanel : [Party] -> PanelTerms -> Script (ContractId Panel)
+formPanel nodes terms = do
+  let first = head nodes
+  proposal <- submit first $ createCmd PanelProposal with nodes; accepted = [first]; terms
+  accept nodes (tail nodes) proposal
+
+accept : [Party] -> [Party] -> ContractId PanelProposal -> Script (ContractId Panel)
+accept _ [] _ = fail "proposal never completed"
+accept nodes (node :: rest) proposal = do
+  result <- submit node $ exerciseCmd proposal PanelProposal_Accept with node
+  case result of
+    Left next -> accept nodes rest next
+    Right panel -> pure panel
+
+-- | A fund applies and each node approves in turn.
+admit : [Party] -> Text -> Party -> Optional Party -> Script (ContractId Membership)
+admit nodes panel member auditor = do
+  application <- submit member $ createCmd MembershipApplication with
+    member; auditor; nodes; panel; approvals = []
+  approveAll nodes application
+
+approveAll : [Party] -> ContractId MembershipApplication -> Script (ContractId Membership)
+approveAll [] _ = fail "application never completed"
+approveAll (node :: rest) application = do
+  result <- submit node $ exerciseCmd application MembershipApplication_Approve with node
+  case result of
+    Left next -> approveAll rest next
+    Right membership -> pure membership
+
+-- Shares ---------------------------------------------------------------------
+
+-- | A deterministic stand-in for a browser's random number: 60 bits of the
+-- SHA-256 of `seed`.
+pseudo : Text -> Int
+pseudo seed = foldl (\acc c -> acc * 16 + hexDigit c) 0 (Text.explode (Text.take 15 (Text.sha256 seed)))
+
+hexDigit : Text -> Int
+hexDigit c = fromSomeNote "hex digit" (elemIndex c (Text.explode "0123456789abcdef"))
+
+-- | Split `mark` (in hundredths of a point) into the parcels for seats 1, 2
+-- and 3, as a fund's browser does: two random shares and a third that makes
+-- them add up, for the mark and for its square.
+split : Text -> Int -> [[Share]]
+split seed mark = map (\slot -> filter (\s -> s.index /= slot) shares) [1, 2, 3]
+  where
+    r k = pseudo (seed <> "/" <> k)
+    shares =
+      [ Share with index = 1; value = r "v1"; square = r "q1"
+      , Share with index = 2; value = r "v2"; square = r "q2"
+      , Share with index = 3; value = reduce (mark - r "v1" - r "v2"); square = reduce (mark * mark - r "q1" - r "q2") ]
+
+-- | Add up a fund's shares across its parcels, once per index.
+recombine : [[Share]] -> Int
+recombine parcels = sumShares (map (.value) (dedupShares (concat parcels)))
+
+dedupShares : [Share] -> [Share]
+dedupShares = foldl (\acc s -> if any (\t -> t.index == s.index) acc then acc else acc ++ [s]) []
+
+-- Rounds -------------------------------------------------------------------
+
+halcyon : Loan
+halcyon = Loan with
+  id = "HALCYON-UNI-2031"
+  borrower = "Halcyon Dental Partners"
+  facility = "Unitranche"
+  maturity = date 2031 Jun 30
+
+-- | Five funds' marks, in hundredths of a point: 92.50, 94.75, 91.00, 96.00
+-- and 93.25. Their mean is 93.50 and their standard deviation 1.7393.
+marks : [Int]
+marks = [9250, 9475, 9100, 9600, 9325]
+
+openRound : Env -> Text -> Script (ContractId Round)
+openRound env roundId = do
+  now <- getTime
+  submit (head env.nodes) $ exerciseCmd env.panel Panel_OpenRound with
+    opener = head env.nodes
+    roundId
+    loan = halcyon
+    asOf = date 2026 Sep 30
+    closesAt = addRelTime now (days 1)
+    memberships = env.memberships
+
+invitationsOf : Party -> ContractId Round -> Script [(ContractId Invitation, Invitation)]
+invitationsOf fund roundCid =
+  sortOn (\(_, i) -> i.slot) . filter (\(_, i) -> i.roundCid == roundCid) <$> query @Invitation fund
+
+-- | The fund sends one parcel to each seat, in one transaction.
+contributeShares : ContractId Round -> Party -> [[Share]] -> Script [ContractId Parcel]
+contributeShares roundCid fund parcels = do
+  invitations <- invitationsOf fund roundCid
+  submit fund $ forA invitations \(cid, invitation) ->
+    exerciseCmd cid Invitation_Contribute with shares = parcels !! (invitation.slot - 1)
+
+contribute : ContractId Round -> Party -> Int -> Script [ContractId Parcel]
+contribute roundCid fund mark = contributeShares roundCid fund (split (partyToText fund <> show roundCid) mark)
+
+-- | Every fund in `funds` marks the loan at the matching entry of `marks`.
+contributeAll : ContractId Round -> [Party] -> [Int] -> Script ()
+contributeAll roundCid funds values = forA_ (zip funds values) \(fund, mark) -> contribute roundCid fund mark
+
+closeRound : Script ()
+closeRound = passTime (days 1)
+
+nodeAt : Env -> Int -> Party
+nodeAt env slot = env.nodes !! (slot - 1)
+
+parcelsAt : Env -> Int -> ContractId Round -> Script [ContractId Parcel]
+parcelsAt env slot roundCid = do
+  let node = nodeAt env slot
+  map fst . filter (\(_, p) -> p.roundCid == roundCid && p.node == node) <$> query @Parcel node
+
+report : Env -> ContractId Round -> Int -> Script (ContractId PartialSum)
+report env roundCid slot = do
+  parcels <- parcelsAt env slot roundCid
+  submit (nodeAt env slot) $ exerciseCmd (env.seats !! (slot - 1)) Seat_Report with roundCid; parcels
+
+publish : Env -> ContractId Round -> [ContractId PartialSum] -> Script (ContractId ConsensusMark)
+publish env roundCid reports = submit (head env.nodes) $ exerciseCmd roundCid Round_Publish with
+  publisher = head env.nodes
+  reports
+
+-- | A full round: the first five funds mark, the round closes, the seats in
+-- `slots` report and the first node publishes.
+markedWith : Env -> Text -> [Int] -> Script (ContractId ConsensusMark)
+markedWith env roundId slots = do
+  roundCid <- openRound env roundId
+  contributeAll roundCid env.funds marks
+  closeRound
+  reports <- forA slots (report env roundCid)
+  publish env roundCid reports
+
+marked : Env -> Script (ContractId ConsensusMark)
+marked env = markedWith env "HALCYON-UNI-2031/2026-09-30" [1, 2, 3]
+
+markOf : Env -> ContractId ConsensusMark -> Script Mark
+markOf env cid = (.mark) . fromSomeNote "mark" <$> queryContractId (head env.nodes) cid
+
+-- Tokens -------------------------------------------------------------------
+
+mint : Env -> Party -> Decimal -> Script ()
+mint env owner amount = do
+  _ <- submit [owner, env.registry] $ createCmd Token with
+    holding = HoldingView with
+      owner
+      instrumentId = env.cc
+      amount
+      lock = None
+      meta = emptyMetadata
+  pure ()
+
+holdingsOf : Env -> Party -> Script [(ContractId Token, Token)]
+holdingsOf env owner =
+  filter (\(_, t) -> t.holding.owner == owner && t.holding.instrumentId == env.cc) <$> query @Token owner
+
+balanceOf : Env -> Party -> Script Decimal
+balanceOf env owner = sum . map (\(_, t) -> t.holding.amount) <$> holdingsOf env owner
+
+noExtraArgs : ExtraArgs
+noExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- | The sender allocates its own holdings to one settlement leg through the
+-- registry's standard allocation factory, as a CIP-56 wallet would.
+allocate : Env -> SettlementInfo -> Text -> TransferLeg -> Script AllocationInput
+allocate env settlement transferLegId transferLeg = do
+  holdings <- holdingsOf env transferLeg.sender
+  now <- getTime
+  result <- submit (actAs transferLeg.sender <> readAs env.registry) $
+    exerciseCmd (toInterfaceContractId @AllocationFactory (fromSomeNote "test token rules" env.rules)) AllocationFactory_Allocate with
+      expectedAdmin = env.registry
+      allocation = AllocationSpecification with settlement; transferLegId; transferLeg
+      requestedAt = now
+      inputHoldingCids = map (toInterfaceContractId . fst) holdings
+      extraArgs = noExtraArgs
+  case result.output of
+    AllocationInstructionResult_Completed {allocationCid} -> pure (allocationCid, noExtraArgs)
+    _ -> fail "allocation did not complete"
+
+-- | List the mark to the reader and open a purchase.
+requestRead : Env -> ContractId ConsensusMark -> Script (ContractId ReadRequest, ReadRequest)
+requestRead env markCid = do
+  [listingCid] <- submit (head env.nodes) $ exerciseCmd env.panel Panel_List with
+    node = head env.nodes
+    markCid
+    subscriptions = [env.subscription]
+  requestCid <- submit env.reader $ exerciseCmd listingCid Listing_Buy
+  request <- fromSomeNote "request" <$> queryContractId env.reader requestCid
+  pure (requestCid, request)
+
+-- | The reader funds every fee leg in full and the executor settles.
+buy : Env -> ContractId ConsensusMark -> Script (ContractId MarkCopy)
+buy env markCid = do
+  (requestCid, request) <- requestRead env markCid
+  allocations <- forA (feeLegs request) \(legId, leg) -> allocate env request.settlement legId leg
+  submit request.settlement.executor $ exerciseCmd requestCid ReadRequest_Fulfil with allocations
+
+-- Assertions ---------------------------------------------------------------
+
+-- | The submission fails with a message containing `expected`.
+failsWith : Text -> Script (Either SubmitError a) -> Script ()
+failsWith expected attempt = do
+  result <- attempt
+  case result of
+    Left err -> unless (expected `Text.isInfixOf` show err) $
+      fail ("expected failure containing \"" <> expected <> "\", got: " <> show err)
+    Right _ -> fail ("expected failure containing \"" <> expected <> "\", but it succeeded")

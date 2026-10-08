@@ -1,0 +1,15 @@
+Plimsoll
+Copyright 2026 The Plimsoll authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes or is derived from the following third-party work:
+
+* daml/dars/ — Splice token-standard API packages and the Splice test token
+  (Splice 0.6.13), Copyright Digital Asset (Switzerland) GmbH and/or its
+  affiliates, licensed under the Apache License, Version 2.0.
+  https://github.com/hyperledger-labs/splice
+
+* web/ — the visual layer of the web app started from the Orbital Swap web
+  app (https://orbital-olive-omega.vercel.app). The derived files have been
+  modified for Plimsoll: copy, branding, routes and data have changed.
