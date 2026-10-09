@@ -7,8 +7,8 @@ single price: not the other funds, and not the three nodes that run the panel.
 Every contributor gets back the average and the spread, and lenders can buy the
 same mark in Canton Coin, delivered in the transaction that pays for it.
 
-**[Live demo](https://plimsoll-demo.up.railway.app)** ·
-**[Run on the Canton DevNet, in Canton Coin](docs/devnet.md)** ·
+**[Live demo, on the Canton DevNet](https://plimsoll-demo.up.railway.app)** ·
+**[DevNet run, in Canton Coin](docs/devnet.md)** ·
 HackCanton Season 3 · Data, Analytics & Ecosystem Dashboards
 
 ![Plimsoll](docs/assets/landing.jpg)
@@ -100,11 +100,11 @@ sequenceDiagram
 
 ## Try it
 
-The [live demo](https://plimsoll-demo.up.railway.app) runs a Canton sandbox
-with the demo panel already seeded: three nodes, six funds and one applicant,
-a lender and an auditor, nine published marks for three loans over three
-quarters, and one live round. Pick who you act as from the menu at the top
-right. Everyone shares the one ledger, so you may see what other visitors did.
+The [live demo](https://plimsoll-demo.up.railway.app) runs on the HackCanton
+DevNet, against the demo panel seeded there: three nodes, six funds and one
+applicant, a lender and an auditor, three quarters of published marks for three
+loans, and one live round. Pick who you act as from the menu at the top right.
+Everyone shares the one ledger, so you may see what other visitors did.
 
 1. **As Ashgrove Credit (fund)**, open *Contribute*, type a mark for Tidewell
    Logistics and split it. Each node's parcel shows the two shares it gets.
@@ -120,8 +120,8 @@ right. Everyone shares the one ledger, so you may see what other visitors did.
 6. **As each node**, approve or reject Greystone's application to join. It
    takes all three.
 
-The hosted demo pays in the CIP-56 reference test token, labelled *test CC*.
-The same app on the HackCanton DevNet pays in real Canton Coin; see below.
+The lender pays in Canton Coin. Every action is a DevNet transaction, so each
+takes a few seconds.
 
 ## On the Canton DevNet, in Canton Coin
 
@@ -180,9 +180,9 @@ DevNet.
 - **The demo app submits for every persona** so one person can play all of
   them, and every party sits on one participant. In production each fund splits
   its mark in its own client and submits from its own participant.
-- **The hosted demo and the local sandbox pay in the CIP-56 reference test
-  token.** Canton Coin settlement runs on DevNet, through the same allocation
-  interfaces.
+- **The local sandbox pays in the CIP-56 reference test token**, labelled
+  *test CC*. The live demo on DevNet pays in Canton Coin, through the same
+  allocation interfaces.
 
 ## Run it
 
@@ -219,7 +219,9 @@ See [docs/devnet.md](docs/devnet.md).
 sandbox with Plimsoll, seeded on start, and the web app in front of it. Canton,
 Daml Script and the demo DAR (from this repository's
 [v0.1.0 release](https://github.com/martinvibes/plimsoll/releases/tag/v0.1.0))
-are each pinned by digest.
+are each pinned by digest. With `PLIMSOLL_LEDGER_URL` and the DevNet settings
+from [docs/devnet.md](docs/devnet.md) set, it runs the app alone against that
+ledger instead; that is how the live demo runs.
 
 ```sh
 docker build -f deploy/Dockerfile -t plimsoll-demo .

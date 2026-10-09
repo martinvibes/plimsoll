@@ -7,6 +7,17 @@
 # stops, the container stops, and the host restarts it.
 set -euo pipefail
 
+# Against a remote ledger, such as the HackCanton DevNet (docs/devnet.md), only
+# the web app runs: the cast comes from PLIMSOLL_CAST, and the Keycloak tokens
+# from PLIMSOLL_LEDGER_TOKENS, written to the token file the app refreshes.
+if [[ -n "${PLIMSOLL_LEDGER_URL:-}" ]]; then
+  if [[ -n "${PLIMSOLL_LEDGER_TOKENS:-}" ]]; then
+    mkdir -p "$(dirname "$PLIMSOLL_LEDGER_TOKEN_FILE")"
+    (umask 077 && printf '%s' "$PLIMSOLL_LEDGER_TOKENS" > "$PLIMSOLL_LEDGER_TOKEN_FILE")
+  fi
+  exec node /app/server.js
+fi
+
 java ${CANTON_JAVA_OPTS:--Xmx512m} -jar /opt/plimsoll/canton.jar sandbox \
   --ledger-api-port 6865 --json-api-port 7575 --dar /opt/plimsoll/plimsoll-demo.dar &
 canton=$!
