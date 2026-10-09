@@ -51,6 +51,6 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3000 \
     PLIMSOLL_CAST_FILE=/app/.plimsoll/cast.json \
-    PLIMSOLL_NETWORK="Canton sandbox"
+    PLIMSOLL_NETWORK="Canton"
 EXPOSE 3000
 CMD ["plimsoll-demo"]
